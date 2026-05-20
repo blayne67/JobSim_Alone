@@ -1,7 +1,14 @@
 fileFormatVersion: 2
-guid: c1b9a203523820c4eb35575df7fef327
+guid: e544e9bc911851047a3c0ca4770df192
 DefaultImporter:
   externalObjects: {}
   userData: 
   assetBundleName: 
   assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 353008
+  packageName: Car garage shop - Game environment
+  packageVersion: 1.0
+  assetPath: Assets/MarioParadiso/Demo/DemoScene.unity
+  uploadId: 846780

@@ -10,74 +10,100 @@ public class ZeroAccelCar : MonoBehaviour
     public WheelCollider rearRight;
 
     [Header("Engine")]
-    public float motorPower = 14000f;
+    [Tooltip("Adjusted to 2500 for stable physics. 14000 was causing permanent burnouts.")]
+    public float motorPower = 2500f;
     public float brakePower = 6000f;
     public float maxSpeed = 220f;
+    public float rollingResistance = 2000f;
 
     [Header("Steering")]
-    public float steerAngle = 45f;
+    public float lowSpeedSteerAngle = 45f;
+    public float highSpeedSteerAngle = 12f;
+
+    [Header("Drift Settings")]
+    public KeyCode driftKey = KeyCode.LeftShift; // Changed from TAB to avoid Unity UI focus bugs
+    public float normalSidewaysStiffness = 1.5f;
+    public float driftSidewaysStiffness = 0.35f;
+    public float normalForwardStiffness = 1.5f;
+    public float driftForwardStiffness = 0.8f;
+
+    [Header("Physics Real Estate")]
+    public Transform centerOfMassTransform;
 
     Rigidbody rb;
-
     float throttle;
     float steer;
-    float brake;
-
+    bool isBraking;
+    private bool isDriftModeActive = false;
     float currentSteer;
 
     void Start()
     {
         rb = GetComponent<Rigidbody>();
-
         rb.mass = 1600f;
-        rb.centerOfMass = new Vector3(0, -0.6f, 0);
-
-        rb.linearDamping = 0.05f;          // 🔥 stronger natural stop
+        rb.linearDamping = 0.05f;
         rb.angularDamping = 0.4f;
+
+        if (centerOfMassTransform != null)
+        {
+            rb.centerOfMass = transform.InverseTransformPoint(centerOfMassTransform.position);
+        }
+        else
+        {
+            rb.centerOfMass = new Vector3(0, -0.1f, 0);
+        }
+
+        // Set initial grip
+        UpdateRearWheelTraction();
     }
 
     void Update()
     {
         throttle = Input.GetAxis("Vertical");
         steer = Input.GetAxis("Horizontal");
-        brake = Input.GetKey(KeyCode.Space) ? 1f : 0f;
+        isBraking = Input.GetKey(KeyCode.Space);
+
+        // Toggle Drift Mode
+        if (Input.GetKeyDown(driftKey))
+        {
+            isDriftModeActive = !isDriftModeActive;
+            UpdateRearWheelTraction();
+            Debug.Log("Drift Mode: " + (isDriftModeActive ? "ENABLED 🏎️🔥" : "DISABLED 🛑"));
+        }
     }
 
     void FixedUpdate()
     {
         float speed = rb.linearVelocity.magnitude * 3.6f;
 
-        FULL_RESET();          // 🔥 KEY FIX
         ApplyDrive(speed);
-        ApplySteering();
+        ApplySteering(speed);
         ApplyBrakes();
-        HARD_STOP_FIX();       // 🔥 ENSURES ZERO ACCEL WITHOUT INPUT
     }
 
-    // ---------------- FULL RESET ----------------
-    void FULL_RESET()
-    {
-        rearLeft.motorTorque = 0f;
-        rearRight.motorTorque = 0f;
-
-        frontLeft.brakeTorque = 0f;
-        frontRight.brakeTorque = 0f;
-        rearLeft.brakeTorque = 0f;
-        rearRight.brakeTorque = 0f;
-
-        frontLeft.steerAngle = 0f;
-        frontRight.steerAngle = 0f;
-    }
-
-    // ---------------- DRIVE ----------------
+    // ---------------- DRIVE WITH ANTI-BURNOUT ----------------
     void ApplyDrive(float speed)
     {
-        // 🔥 CRITICAL: NO INPUT = NO TORQUE AT ALL
         if (Mathf.Abs(throttle) < 0.1f)
+        {
+            rearLeft.motorTorque = 0f;
+            rearRight.motorTorque = 0f;
             return;
+        }
+
+        // TRACTION CONTROL: If drift mode is OFF but the wheels are spinning insanely fast,
+        // temporarily cut torque so the tires can catch the ground.
+        if (!isDriftModeActive)
+        {
+            if (rearLeft.rpm > 800f || rearRight.rpm > 800f)
+            {
+                rearLeft.motorTorque = 100f; // Give it just a tiny nudge to regain grip
+                rearRight.motorTorque = 100f;
+                return;
+            }
+        }
 
         float torque = throttle * motorPower;
-
         float speedFactor = Mathf.Clamp01(speed / maxSpeed);
         torque *= (1f - speedFactor * 0.4f);
 
@@ -86,11 +112,16 @@ public class ZeroAccelCar : MonoBehaviour
     }
 
     // ---------------- STEERING ----------------
-    void ApplySteering()
+    void ApplySteering(float speed)
     {
-        float target = steer * steerAngle;
+        float speedFactor = Mathf.Clamp01(speed / maxSpeed);
 
-        currentSteer = Mathf.Lerp(currentSteer, target, Time.deltaTime * 10f);
+        // Give slightly more steering freedom during a drift to allow counter-steering
+        float maxSteer = isDriftModeActive ? lowSpeedSteerAngle * 0.6f : highSpeedSteerAngle;
+        float currentMaxSteerAngle = Mathf.Lerp(lowSpeedSteerAngle, maxSteer, speedFactor);
+
+        float target = steer * currentMaxSteerAngle;
+        currentSteer = Mathf.Lerp(currentSteer, target, Time.fixedDeltaTime * 10f);
 
         frontLeft.steerAngle = currentSteer;
         frontRight.steerAngle = currentSteer;
@@ -99,29 +130,55 @@ public class ZeroAccelCar : MonoBehaviour
     // ---------------- BRAKES ----------------
     void ApplyBrakes()
     {
-        float b = brake * brakePower;
-
-        frontLeft.brakeTorque = b;
-        frontRight.brakeTorque = b;
-        rearLeft.brakeTorque = b;
-        rearRight.brakeTorque = b;
+        if (isBraking)
+        {
+            SetBrakeTorque(brakePower);
+        }
+        else if (Mathf.Abs(throttle) < 0.1f)
+        {
+            // Less resistance during drifts so the car slides smoothly instead of stopping
+            float dynamicResistance = isDriftModeActive ? rollingResistance * 0.2f : rollingResistance;
+            SetBrakeTorque(dynamicResistance);
+        }
+        else
+        {
+            SetBrakeTorque(0f);
+        }
     }
 
-    // ---------------- HARD STOP SYSTEM ----------------
-    void HARD_STOP_FIX()
+    void SetBrakeTorque(float amount)
     {
-        if (Mathf.Abs(throttle) < 0.1f)
+        frontLeft.brakeTorque = amount;
+        frontRight.brakeTorque = amount;
+        rearLeft.brakeTorque = amount;
+        rearRight.brakeTorque = amount;
+    }
+
+    // ---------------- REAR TRACTION CONFIGURATOR ----------------
+    void UpdateRearWheelTraction()
+    {
+        WheelFrictionCurve forwardFriction = rearLeft.forwardFriction;
+        WheelFrictionCurve sidewaysFriction = rearLeft.sidewaysFriction;
+
+        if (isDriftModeActive)
         {
-            Vector3 v = rb.linearVelocity;
+            sidewaysFriction.stiffness = driftSidewaysStiffness;
+            forwardFriction.stiffness = driftForwardStiffness;
+        }
+        else
+        {
+            sidewaysFriction.stiffness = normalSidewaysStiffness;
+            forwardFriction.stiffness = normalForwardStiffness;
 
-            // kill forward motion completely
-            v *= 0.96f;
-
-            rb.linearVelocity = v;
-
-            // safety: remove any leftover wheel drive force
+            // Kill wheel spin velocity instantly when exiting drift mode
             rearLeft.motorTorque = 0f;
             rearRight.motorTorque = 0f;
         }
+
+        rearLeft.forwardFriction = forwardFriction;
+        rearLeft.sidewaysFriction = sidewaysFriction;
+
+        rearRight.forwardFriction = forwardFriction;
+        rearRight.sidewaysFriction = sidewaysFriction;
     }
 }
